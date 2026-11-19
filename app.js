@@ -2,14 +2,14 @@ const KOKORO = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/+esm";
 const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs";
 const PDFJS_WORKER = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs";
 const JSZIP = "https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm";
-const SILENT = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+const SILENT = (() => { const n = 4000, b = new DataView(new ArrayBuffer(44 + n * 2)); const w = (o, t) => [...t].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0))); w(0, "RIFF"); b.setUint32(4, 36 + n * 2, true); w(8, "WAVEfmt "); b.setUint32(16, 16, true); b.setUint16(20, 1, true); b.setUint16(22, 1, true); b.setUint32(24, 8000, true); b.setUint32(28, 16000, true); b.setUint16(32, 2, true); b.setUint16(34, 16, true); w(36, "data"); b.setUint32(40, n * 2, true); return URL.createObjectURL(new Blob([b], { type: "audio/wav" })); })();
 
 const $ = id => document.getElementById(id);
 const audio = new Audio();
 audio.preservesPitch = true;
 let tts = null, queue = Promise.resolve(), sections = [], chunkLists = [], si = 0, ci = 0;
 let token = 0, running = false, fileKey = "", fileName = "";
-const cache = new Map();
+const cache = new Map(), peaks = new Map();
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 
@@ -96,7 +96,7 @@ function synth(s, c) {
   const k = `${s}:${c}:${$("voice").value}`;
   if (!cache.has(k)) {
     const text = chunksOf(s)[c], voice = $("voice").value;
-    const p = queue.then(async () => URL.createObjectURL((await tts.generate(text, { voice })).toBlob()));
+    const p = queue.then(async () => { const a = await tts.generate(text, { voice }); let pk = 0; for (const v of a.audio) pk = Math.max(pk, Math.abs(v)); peaks.set(k, pk); return URL.createObjectURL(a.toBlob()); });
     queue = p.catch(() => {});
     cache.set(k, p);
   }
@@ -110,7 +110,7 @@ async function run() {
   const my = ++token;
   running = true; ui();
   try { await loadTTS(); } catch (e) { say("Could not load the voice model: " + e.message); running = false; ui(); return; }
-  say("Reading aloud…");
+  say("Preparing the first sentences. The first one can take 10 to 30 seconds on a phone.");
   while (my === token) {
     const keys = [`${si}:${ci}:${$("voice").value}`];
     let nx = after(si, ci);
@@ -121,8 +121,9 @@ async function run() {
     try { url = await synth(si, ci); } catch (e) { say("Speech failed: " + e.message); break; }
     if (my !== token) return;
     audio.src = url; audio.playbackRate = +$("speed").value;
+    say((peaks.get(`${si}:${ci}:${$("voice").value}`) ?? 1) < 0.01 ? "The voice produced silence. Try another voice or the GPU setting in the README." : "Reading aloud…");
     try { await audio.play(); } catch { say("Tap play to continue."); running = false; ui(); return; }
-    await new Promise(res => { audio.onended = res; audio.onerror = res; });
+    await new Promise(res => { audio.onended = res; audio.onerror = () => { say("The audio could not be played on this device."); res(); }; });
     if (my !== token) return;
     const n = after(si, ci);
     if (!n) { say("Finished."); break; }
